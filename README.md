@@ -23,7 +23,7 @@ Pour éditer et collaborer sur ce code, vous pouvez cloner ce dépôt avec git e
 ```
 git clone https://github.com/H2EcoInnov/prototype-control-system.git
 ```
-Pour plus d'information sur la collaboration sur des projets de code vus pouvez suivre ce tutoriel sur git : https://www.w3schools.com/git/ ou lire le READ ME Git présent dans : /documentation/README_Git.md
+Pour plus d'informations sur la collaboration sur le projet vous pouvez suivre ce tutoriel sur git : https://www.w3schools.com/git/ ou lire le READ ME Git présent dans : /documentation/README_Collab.md
 
 Les collaborateurs du projet resteront autant que possible disponibles pour assurer la transmission des informations. Leurs contacts sont disponibles ci-dessous :
 - Corentin Royet, corentin.royet@proton.me
