@@ -1,6 +1,6 @@
 # prototype-control-system
 
-Ce dépôt contient le code de contrôle du prototype H2 Eco'Innov pour la saison 2024-2025.
+Ce dépôt contient le code de contrôle du prototype H2 Eco'Innov.
 
 Il est destiné aux trois cartes de commande du prototype :
 
