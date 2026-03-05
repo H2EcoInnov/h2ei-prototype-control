@@ -10,15 +10,30 @@ const int fcCurrentPin    = 27;
 const int evPurgePin      = 3;
 
 // ==== CAN ====
-FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> canBus;
+FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> canBus;
+
+// ==== CAN test / resend ====
+unsigned long lastCanTestTx = 0;
+const unsigned long canTestIntervalMs = 10000; // 10 secondes
+
+// Mémorisation dernière trame reçue
+static CAN_message_t lastRxMsg;
+static bool haveLastRxMsg = false;
+
+// ==== Variation ventilateur test ====
+unsigned long lastFanChange = 0;
+const unsigned long fanChangeInterval = 10000; // 10 secondes
+uint8_t fanTestSpeed = 0;
+bool fanIncreasing = true;
 
 // ==== Modes ====
 enum SystemMode { STARTUP, NORMAL };
 SystemMode mode = STARTUP;
-unsigned long startupStartTime = 0;
-const unsigned long startupDurationMs = 10000; // 10s
 
-// ==== Purge cycle ====
+unsigned long startupStartTime      = 0;
+const unsigned long startupDuration = 10000;
+
+// ==== Purge ====
 unsigned long lastPurgeTime = 0;
 const unsigned long purgeIntervalStartup = 10000;
 const unsigned long purgeIntervalNormal  = 30000;
@@ -30,72 +45,129 @@ unsigned long purgeStartTime = 0;
 const float MIN_VOLTAGE = 20.0;
 const float MAX_TEMP = 70.0;
 
-// ==== Logging ====
-File logFile;
-unsigned long lastLogTime = 0;
-const unsigned long logIntervalMs = 500;
-
-// ==== Lecture capteurs ====
-float readVoltage() {
-  int raw = analogRead(fcVoltagePin);
-  return raw * (3.3 / 1023.0) * 11; // diviseur de tension
-}
-
-float readTemperature(int pin) {
-  int raw = analogRead(pin);
-  return (raw * 3.3 / 1023.0 - 0.5) * 100.0; // LM35
-}
-
-// ==== Contrôle ventilateur ====
-void setFanSpeed(float temp) {
-  int pwm = 0;
-  if (mode == STARTUP) {
-    pwm = 255;
-  } else if (temp > 30) {
-    pwm = map(temp, 30, 70, 100, 255);
-    pwm = constrain(pwm, 100, 255);
-  }
-  analogWrite(fanPwmPin, pwm);
-}
-
-// ==== CAN ====
-void sendTelemetry(float voltage, float temp) {
-  CAN_message_t msg;
-  msg.id = 0x101;
-  msg.len = 4;
-  msg.buf[0] = (uint8_t)(voltage * 10);
-  msg.buf[1] = (uint8_t)(temp);
-  msg.buf[2] = 0;
-  msg.buf[3] = 0;
-  canBus.write(msg);
-}
-
+// =======================
+// ===== CAN RX =========
+// =======================
 void handleIncomingCAN() {
   CAN_message_t msg;
-  if (canBus.read(msg)) {
-    if (msg.id == 0x200) {
-      // Traitement spécifique à faire ici
+
+  while (canBus.read(msg)) {
+    // Sauvegarde la dernière trame reçue
+    lastRxMsg = msg;
+    haveLastRxMsg = true;
+
+    Serial.print("[CAN RX] ID=0x");
+    Serial.print(msg.id, HEX);
+    Serial.print(" LEN=");
+    Serial.print(msg.len);
+    Serial.print(" DATA=");
+    for (uint8_t i = 0; i < msg.len; i++) {
+      if (msg.buf[i] < 0x10) Serial.print('0');
+      Serial.print(msg.buf[i], HEX);
+      Serial.print(" ");
+    }
+    Serial.println();
+  }
+}
+
+// =======================
+// ===== CAN TX =========
+// =======================
+void sendCanTestFrame(unsigned long now) {
+  if (now - lastCanTestTx >= canTestIntervalMs) {
+    lastCanTestTx = now;
+
+    CAN_message_t msg;
+    msg.id  = 0x555;
+    msg.len = 8;
+
+    msg.buf[0] = 0x54; // T
+    msg.buf[1] = 0x45; // E
+    msg.buf[2] = 0x53; // S
+    msg.buf[3] = 0x54; // T
+
+    msg.buf[4] = (now >> 24) & 0xFF;
+    msg.buf[5] = (now >> 16) & 0xFF;
+    msg.buf[6] = (now >> 8)  & 0xFF;
+    msg.buf[7] = (now)       & 0xFF;
+
+    bool ok = canBus.write(msg);
+
+    Serial.print("[CAN TX] Test frame ");
+    Serial.println(ok ? "OK" : "FAIL");
+  }
+}
+
+// Renvoie la dernière trame reçue (si dispo), sinon envoie la trame de test
+void resendLastRxOrSendTest(unsigned long now) {
+  if (now - lastCanTestTx >= canTestIntervalMs) {
+    lastCanTestTx = now;
+
+    if (haveLastRxMsg) {
+      // Attention: on renvoie exactement la dernière trame reçue
+      bool ok = canBus.write(lastRxMsg);
+
+      Serial.print("[CAN TX] Resend last RX ");
+      Serial.println(ok ? "OK" : "FAIL");
+    } else {
+      // Pas encore reçu de trame => on envoie la trame de test
+      CAN_message_t msg;
+      msg.id  = 0x555;
+      msg.len = 8;
+
+      msg.buf[0] = 0x54; // T
+      msg.buf[1] = 0x45; // E
+      msg.buf[2] = 0x53; // S
+      msg.buf[3] = 0x54; // T
+
+      msg.buf[4] = (now >> 24) & 0xFF;
+      msg.buf[5] = (now >> 16) & 0xFF;
+      msg.buf[6] = (now >> 8)  & 0xFF;
+      msg.buf[7] = (now)       & 0xFF;
+
+      bool ok = canBus.write(msg);
+
+      Serial.print("[CAN TX] Test frame ");
+      Serial.println(ok ? "OK" : "FAIL");
     }
   }
 }
 
-// ==== Sécurité ====
-void checkSafety(float voltage, float temp) {
-  if (voltage < MIN_VOLTAGE) {
-    Serial.println("Tension trop basse !");
-    analogWrite(fanPwmPin, 255);
-    // TODO : désactiver sortie, alerte, LED...
-  }
+// ================================
+// ===== Variation ventilateur ====
+// ================================
+void handleFanVariation(unsigned long now) {
 
-  if (temp > MAX_TEMP) {
-    Serial.println("Température critique !");
-    // TODO : alerte ou arrêt d'urgence
+  if (now - lastFanChange >= fanChangeInterval) {
+    lastFanChange = now;
+
+    if (fanIncreasing) {
+      fanTestSpeed += 50;
+      if (fanTestSpeed >= 250) {
+        fanTestSpeed = 255;
+        fanIncreasing = false;
+      }
+    } else {
+      if (fanTestSpeed > 50) {
+        fanTestSpeed -= 50;
+      } else {
+        fanTestSpeed = 0;
+        fanIncreasing = true;
+      }
+    }
+
+    analogWrite(fanPwmPin, fanTestSpeed);
+
+    Serial.print("Vitesse ventilateur : ");
+    Serial.println(fanTestSpeed);
   }
 }
 
-// ==== Purge ====
-void handlePurgeCycle() {
-  unsigned long now = millis();
+// =======================
+// ===== Purge ===========
+// =======================
+void handlePurgeCycle(unsigned long now) {
+
   unsigned long interval = (mode == STARTUP) ? purgeIntervalStartup : purgeIntervalNormal;
 
   if (!purgeActive && now - lastPurgeTime >= interval) {
@@ -113,70 +185,43 @@ void handlePurgeCycle() {
   }
 }
 
-// ==== Logging ====
-void logData(unsigned long now, float voltage, float temp) {
-  if (now - lastLogTime >= logIntervalMs && logFile) {
-    logFile.printf("%lu,%.2f,%.2f\n", now, voltage, temp);
-    logFile.flush();
-    lastLogTime = now;
-  }
-}
-
-// ==== Setup ====
+// =======================
+// ===== SETUP ===========
+// =======================
 void setup() {
-  Serial.begin(115200);
-  delay(500);
 
-  // PWM ventilateur
+  Serial.begin(115200);
+  delay(200);
+
   pinMode(fanPwmPin, OUTPUT);
   analogWriteFrequency(fanPwmPin, 25000);
   analogWrite(fanPwmPin, 0);
 
-  // Purge
   pinMode(evPurgePin, OUTPUT);
   digitalWrite(evPurgePin, LOW);
 
-  // CAN
+  // ==== CAN INIT ====
   canBus.begin();
-  canBus.setBaudRate(500000);
+  canBus.setBaudRate(500000); // adapte si besoin
+  Serial.println("CAN3 initialisé à 500k");
 
-  // SD
-  if (!SD.begin(BUILTIN_SDCARD)) {
-    Serial.println("Carte SD non détectée !");
-  } else {
-    logFile = SD.open("log.csv", FILE_WRITE);
-    if (logFile) {
-      logFile.println("Temps(ms),Tension(V),Température(°C)");
-      Serial.println("ogging activé");
-    } else {
-      Serial.println("Impossible d’ouvrir log.csv");
-    }
-  }
-
-  // Temps de démarrage
   startupStartTime = millis();
-  Serial.println("Système en mode STARTUP");
 }
 
-// ==== Loop ====
+// =======================
+// ===== LOOP ============
+// =======================
 void loop() {
+
   unsigned long now = millis();
 
-  // Changement de mode
-  if (mode == STARTUP && now - startupStartTime >= startupDurationMs) {
-    mode = NORMAL;
-    Serial.println("Passage en mode NORMAL");
-  }
-
-  float voltage = readVoltage();
-  float temp    = readTemperature(fcTempPin);
-
-  setFanSpeed(temp);
-  checkSafety(voltage, temp);
-  handlePurgeCycle();
-  sendTelemetry(voltage, temp);
+  // ===== CAN =====
   handleIncomingCAN();
-  logData(now, voltage, temp);
+  resendLastRxOrSendTest(now); // <-- remplace l'envoi test direct
 
-  delay(100); // fréquence principale = 10 Hz
+  // ===== Variation ventilateur =====
+  handleFanVariation(now);
+
+  // ===== Purge =====
+  handlePurgeCycle(now);
 }
