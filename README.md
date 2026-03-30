@@ -1,4 +1,4 @@
-# prototype-control-system
+# h2ei_prototype-control
 
 Ce dépôt contient le code de contrôle du prototype H2 Eco'Innov.
 
