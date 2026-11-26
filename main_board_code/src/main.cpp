@@ -122,6 +122,27 @@ const float CURRENT_ADC_SENSITIVITY_V_PER_A = 0.0175f; // sensibilité ADC en V/
 const int ANALOG_SAMPLES = 20;
 
 // ============================================================
+// =================== Thermosta de la pile ===================
+// ============================================================
+
+
+const float temp_table[] = {
+    -40, -35, -30, -25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 30, 35, 
+    40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125
+};
+
+const float res_table[] = {
+    4397.0, 3089.0, 2197.0, 1582.0, 1151.0, 846.6, 629.0, 471.6, 357.0, 
+    272.5, 209.7, 162.7, 127.1, 100.0, 79.22, 63.17, 50.68, 40.90, 33.20, 
+    27.09, 22.22, 18.32, 15.18, 12.64, 10.57, 8.873, 7.481, 6.337, 5.384, 
+    4.594, 3.934, 3.380, 2.916, 2.522
+};
+
+const int table_size = sizeof(temp_table) / sizeof(temp_table[0]);
+
+
+
+// ============================================================
 // ================= Outils généraux ==========================
 // ============================================================
 
@@ -192,6 +213,40 @@ float readFuelCellCurrent() {
   }
 
   return current;
+}
+
+float getTemperature(float raw_adc) {
+
+// 3. Calculer la résistance de la thermistance
+  // Attention : Remplace 10000.0 par 100000.0 si tu as suivi 
+  // le conseil de souder une résistance de 100 kΩ à la place de la 10 kΩ !
+  float r_fixe = 10000.0; // Valeur de R6 en Ohms
+  float voltage_value = map(raw_adc, 0, 1023, 0, 3.3);
+  float r_mes = r_fixe * ((3.3 / voltage_value)- 1.0)/1000;
+    // 1. Gestion des bornes (pour une CTN, R max = Temp min)
+    if (r_mes >= res_table[0]) return temp_table[0];
+    if (r_mes <= res_table[table_size - 1]) return temp_table[table_size - 1];
+
+
+    // 2. Recherche de l'intervalle d'interpolation
+    for (int i = 1; i < table_size; i++) {
+        // Dès que la résistance mesurée est plus grande que la résistance à l'index i,
+        // on sait qu'elle se situe entre i-1 et i.
+        if (r_mes >= res_table[i]) {
+            float r1 = res_table[i - 1];
+            float r2 = res_table[i];
+            float t1 = temp_table[i - 1];
+            float t2 = temp_table[i];
+
+            // 3. Application de l'équation de la droite
+            return t1 + (r_mes - r1) * (t2 - t1) / (r2 - r1);   
+        }
+    }
+    
+     
+    
+
+    return -273.15; // Fallback de sécurité (zéro absolu)
 }
 
 // Met à jour les LEDs de statut à partir des mesures analogiques.
@@ -326,8 +381,8 @@ void handleFanVariation(unsigned long now) {
 
     if (fanIncreasing) {
       fanTestSpeed += 50;
-      if (fanTestSpeed >= 250) {
-        fanTestSpeed = 255;
+      if (fanTestSpeed >= 150) {
+        fanTestSpeed = 150;
         fanIncreasing = false;
       }
     } else {
@@ -339,7 +394,7 @@ void handleFanVariation(unsigned long now) {
       }
     }
 
-    analogWrite(fanPwmPin, fanTestSpeed);
+    analogWrite(fanPwmPin, 150);
 
 #if DEBUG_SERIAL
     DBG_PRINT("[FAN] Nouvelle consigne PWM = ");
@@ -384,7 +439,7 @@ void handlePurgeCycle(unsigned long now) {
 // ============================================================
 // ====================== Debug périodique =====================
 // ============================================================
-void handlePeriodicDebug(unsigned long now, float measuredVoltage, float measuredCurrent) {
+void handlePeriodicDebug(unsigned long now, float measuredVoltage, float measuredCurrent, float temp, float raw) {
 #if DEBUG_SERIAL
   if (now - lastDebugTime >= DEBUG_PERIOD_MS) {
     lastDebugTime = now;
@@ -407,7 +462,10 @@ void handlePeriodicDebug(unsigned long now, float measuredVoltage, float measure
     DBG_PRINT(canTorqueTarget, 3);
     DBG_PRINT(" Nm | Hold=");
     DBG_PRINT(canHoldDurationMs);
-    DBG_PRINTLN(" ms");
+    DBG_PRINT(" ms | Temparature= ");
+    DBG_PRINT(temp, 2);
+    DBG_PRINT(" °C | raw_value");
+    DBG_PRINTLN(raw, 2);
   }
 #endif
 }
@@ -480,6 +538,8 @@ void loop() {
 
   // Gestion cyclique de la purge
   handlePurgeCycle(now);
+  int raw_adc = analogRead(40);
+  float measureTemp = getTemperature(raw_adc);
 
   // Mesures analogiques
   float measuredVoltage = readFuelCellVoltage();
@@ -489,5 +549,5 @@ void loop() {
   updateStatusLeds(measuredVoltage, measuredCurrent);
 
   // Debug périodique
-  handlePeriodicDebug(now, measuredVoltage, measuredCurrent);
+  handlePeriodicDebug(now, measuredVoltage, measuredCurrent, measureTemp, raw_adc);
 }
